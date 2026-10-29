@@ -1,5 +1,5 @@
 /*!
- * Persona Dots player v1
+ * Persona Dots player v2
  * Renders the baked persona point clouds and morphs between them. No dependencies.
  *
  * Usage:
@@ -13,6 +13,15 @@
  * The element is sized by your layout (e.g. width:100%; aspect-ratio:1). The canvas fills it and
  * everything scales with its size. The background is transparent: style the element itself.
  * JS API: PersonaDots.mount(el, {src | data: ArrayBuffer, color, hold, transition, drift, follow, start}) → {destroy()}
+ *
+ * Syncing text (v2):
+ *   <div data-persona-sync>                      ← optional value: a selector for the visual, e.g. "#hero-dots"
+ *     <div data-persona-item>quote for model 0</div>
+ *     <div data-persona-item>quote for model 1</div> …
+ *   </div>
+ *   Items are matched to models by order. The current one gets the class "is-active"; the rest get aria-hidden.
+ *   Events on the visual (they bubble): "persona:leave" {from, to} as the dots start moving,
+ *   "persona:change" {index, label} as the new figure settles (and once on load).
  */
 (function () {
   'use strict';
@@ -90,7 +99,7 @@
     gl.enableVertexAttribArray(ls); gl.vertexAttribPointer(ls, 1, gl.FLOAT, false, 12, 8);
     const uPx = gl.getUniformLocation(prog, 'u_px'), uCol = gl.getUniformLocation(prog, 'u_col');
 
-    let D = null, buf = null, R = null, cur = 0, next = 1, tl = 0, clock = 0, cx = 0, cy = 0, last = null, raf = 0, onscreen = false, dead = false;
+    let D = null, buf = null, R = null, cur = 0, next = 1, tl = 0, left = false, arrived = false, clock = 0, cx = 0, cy = 0, last = null, raf = 0, onscreen = false, dead = false;
     const size = () => {
       const r = Math.min(2, devicePixelRatio || 1), w = Math.max(2, Math.round(el.clientWidth * r)), h = Math.max(2, Math.round(el.clientHeight * r));
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
@@ -101,6 +110,8 @@
     document.addEventListener('visibilitychange', vis);
     // (re)start after a pause; the time gap while paused is skipped
     function start() { if (D && !raf && !dead && onscreen && !document.hidden && !reduce) { last = null; raf = requestAnimationFrame(frame); } }
+
+    function emit(name, detail) { el.dispatchEvent(new CustomEvent(name, { detail, bubbles: true })); }
 
     function draw(count) {
       // the figure is framed in a square: on a non-square element it stays centred, sized by the shorter side
@@ -123,7 +134,10 @@
       if (!reduce && M.length > 1) {
         clock += dt; tl += dt;
         T = tl < o.hold ? 0 : clamp((tl - o.hold) / o.trans);
-        if (tl >= o.hold + o.trans) { tl = 0; T = 0; cur = next; next = (cur + 1) % M.length; }
+        // text cues: the old line leaves as the dots start moving, the new one arrives as the figure settles
+        if (T > 0 && !left) { left = true; emit('persona:leave', { from: cur, to: next }); }
+        if (T >= 0.75 && !arrived) { arrived = true; emit('persona:change', { index: next, label: M[next].label }); }
+        if (tl >= o.hold + o.trans) { tl = 0; T = 0; cur = next; next = (cur + 1) % M.length; left = arrived = false; }
       }
       const f = o.follow && !reduce ? 1 : 0, e = 1 - Math.pow(0.88, dt * 24);
       cx += (mx * f - cx) * e; cy += (my * f - cy) * e;
@@ -164,13 +178,27 @@
       buf = new Float32Array(maxN * 3); R = new Float32Array(maxN * 4); for (let i = 0; i < R.length; i++) R[i] = hash(i + 1);
       const L = d.models.length; cur = (((o.start | 0) % L) + L) % L; next = (cur + 1) % L;
       if (o.follow) listen();
+      emit('persona:change', { index: cur, label: d.models[cur].label });
       size(); frame(performance.now());
     }).catch(err => console.error(err));
 
     return { destroy() { dead = true; cancelAnimationFrame(raf); ro.disconnect(); io.disconnect(); document.removeEventListener('visibilitychange', vis); cv.remove(); } };
   }
 
+  // ---- text sync ---------------------------------------------------------------------------
+  function sync(box) {
+    if (box.__pds) return; box.__pds = true;
+    const target = box.dataset.personaSync ? document.querySelector(box.dataset.personaSync) : document.querySelector('.persona-dots,[data-persona-dots]');
+    if (!target) return;
+    const items = () => box.querySelectorAll('[data-persona-item]');
+    const show = i => { const L = items(); L.forEach((it, k) => { const on = i != null && k === i % L.length; it.classList.toggle('is-active', on); it.setAttribute('aria-hidden', on ? 'false' : 'true'); }); };
+    show(+(target.dataset.start || 0) || 0); // visible straight away, before the data has loaded
+    target.addEventListener('persona:leave', () => show(null));
+    target.addEventListener('persona:change', e => show(e.detail.index));
+  }
+
   function auto() {
+    document.querySelectorAll('[data-persona-sync]').forEach(sync);
     document.querySelectorAll('.persona-dots[data-src],[data-persona-dots][data-src]').forEach(el => { if (!el.__pd) el.__pd = mount(el); });
   }
   window.PersonaDots = { mount };
